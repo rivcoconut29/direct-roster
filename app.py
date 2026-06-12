@@ -54,6 +54,7 @@ if uploaded_file is not None:
         # UI 介面
         selected_staff = st.selectbox("Select your name to extract duties:", sorted(list(set(personnel_list))))
         include_leaves = st.checkbox("Include Leaves (e.g. AL, CO, OFF) as events", value=True)
+        show_preop = st.checkbox("Show pre-op (general)", value=False)
         
         if selected_staff:
             events = []
@@ -97,6 +98,7 @@ if uploaded_file is not None:
                     break
             
             if staff_col_idx is not None:
+                current_duty_date_obj = None
                 current_duty_date = None
                 leave_tokens = ['al', 'co', 'off']
                 
@@ -110,17 +112,30 @@ if uploaded_file is not None:
                     if col_a != "nan" and col_a != "":
                         try:
                             day_num = int(float(col_a))
-                            current_duty_date = datetime.date(year, month, day_num).strftime('%Y-%m-%d')
+                            current_duty_date_obj = datetime.date(year, month, day_num)
+                            current_duty_date = current_duty_date_obj.strftime('%Y-%m-%d')
                         except ValueError:
                             pass
                     
-                    if not current_duty_date:
+                    if not current_duty_date or not current_duty_date_obj:
                         continue
                         
                     time_slot = "AM" if "AM" in col_b else ("PM" if "PM" in col_b else None)
                     duty_val = str(df_raw_duty.iloc[r_idx, staff_col_idx]).strip()
                     
                     if duty_val and duty_val.lower() not in ['nan', '', 'x', '-']:
+                        # 處理自動推算前一週 8 天前的 pre-op 機制
+                        if show_preop and duty_val.upper() == "OT" and any(day in col_b for day in ["Tue", "Wed"]):
+                            preop_date_obj = current_duty_date_obj - datetime.timedelta(days=8)
+                            events.append({
+                                'all_day': False,
+                                'date': preop_date_obj.strftime('%Y-%m-%d'),
+                                'start_time': '09:30',
+                                'end_time': '10:30',
+                                'summary': 'pre-op',
+                                'description': f"Automated pre-op session for OT duty scheduled on {current_duty_date} ({col_b})"
+                            })
+                        
                         # 檢查是否為請假/放假項目
                         is_leave = duty_val.lower() in leave_tokens
                         if is_leave and not include_leaves:
