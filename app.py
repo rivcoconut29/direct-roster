@@ -70,9 +70,24 @@ if uploaded_file is not None:
         raw_names = df_raw_duty.iloc[1, 2:].tolist()
         ignored_tokens = ['nan', 'free', 'an', 'gyn', '']
         personnel_list = [str(name).strip() for name in raw_names if str(name).strip() and str(name).strip().lower() not in ignored_tokens]
+        personnel_options = sorted(list(set(personnel_list)))
         
-        # UI 介面
-        selected_staff = st.selectbox("Select your name to extract duties:", sorted(list(set(personnel_list))))
+        # --- 優化：Session State 記憶功能 ---
+        if "selected_staff_name" not in st.session_state:
+            st.session_state["selected_staff_name"] = personnel_options[0] if personnel_options else None
+            
+        default_index = 0
+        if st.session_state["selected_staff_name"] in personnel_options:
+            default_index = personnel_options.index(st.session_state["selected_staff_name"])
+            
+        selected_staff = st.selectbox(
+            "Select your name to extract duties:", 
+            personnel_options, 
+            index=default_index
+        )
+        st.session_state["selected_staff_name"] = selected_staff
+        
+        # 其他 UI 控制元件
         include_leaves = st.checkbox("Include Leaves (e.g. AL, CO, OFF) as events", value=True)
         show_preop = st.checkbox("Show pre-op (general)", value=False)
         include_oncall = st.checkbox("Include On-Call Duties (All-Day)", value=False)
@@ -83,9 +98,10 @@ if uploaded_file is not None:
             
             # --- 階段 A: 提取巡房表 (Ward Round) ---
             current_round_date = None
-            # 寫死忽略最後 7 列
+            # 固定忽略最後 7 列備忘錄
             for r_idx in range(4, len(df_raw_round) - 7):
                 col_a = str(df_raw_round.iloc[r_idx, 0]).strip()
+                
                 if col_a != "nan" and col_a != "":
                     try:
                         day_num = int(float(col_a))
@@ -145,7 +161,6 @@ if uploaded_file is not None:
                     duty_val = str(df_raw_duty.iloc[r_idx, staff_col_idx]).strip()
                     
                     if duty_val and duty_val.lower() not in ['nan', '', 'x', '-']:
-                        # 處理自動推算前一週 8 天前的 Pre-op 機制
                         if show_preop and duty_val.upper() == "OT" and any(day in col_b for day in ["Tue", "Wed"]):
                             preop_date_obj = current_duty_date_obj - datetime.timedelta(days=8)
                             events.append({
@@ -193,7 +208,6 @@ if uploaded_file is not None:
                         
                     day_num = extract_day_num(col_a)
                     if day_num is not None:
-                        # 處理跨月自動校正邏輯
                         if prev_day is None and day_num > 20:
                             curr_month = month - 1
                             if curr_month == 0:
@@ -235,7 +249,6 @@ if uploaded_file is not None:
 
             # --- 階段 D: 生成 ICS 檔案 與 預覽 ---
             if len(events) > 0:
-                # 依據日期與時間排序
                 sorted_events = sorted(events, key=lambda x: (x['date'], x.get('start_time', '00:00')))
                 
                 lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Duty//EN", "CALSCALE:GREGORIAN", "METHOD:PUBLISH"]
@@ -278,14 +291,34 @@ if uploaded_file is not None:
                     mime="text/calendar"
                 )
                 
-                # 網頁行事曆即時預覽
+                # --- 優化：網頁行事曆色彩編碼預覽 ---
                 st.write("---")
                 st.subheader("Calendar Preview")
                 for e in sorted_events:
-                    if e['all_day']:
-                        st.write(f"**{e['date']}** [All Day] - **{e['summary']}**")
+                    summary_up = e['summary'].upper()
+                    
+                    # 依據條件指定 Hex 顏色碼
+                    if "ROUND:" in summary_up:
+                        color_hex = "#2E7D32"  # 綠色
+                    elif "ON CALL" in summary_up:
+                        color_hex = "#D32F2F"  # 紅色
+                    elif "PRE-OP" in summary_up:
+                        color_hex = "#1976D2"  # 藍色
+                    elif any(token in summary_up for token in ["OFF", "AL", "CO"]):
+                        color_hex = "#757575"  # 灰色
+                    elif "AM:" in summary_up or "PM:" in summary_up:
+                        color_hex = "#B7950B"  # 深黃/金色 (確保高對比可讀性)
                     else:
-                        st.write(f"**{e['date']}** ({e['start_time']} - {e['end_time']}) - **{e['summary']}**")
+                        color_hex = "#333333"
+                        
+                    time_str = "[All Day]" if e['all_day'] else f"({e['start_time']} - {e['end_time']})"
+                    
+                    # 渲染色彩編碼後的行程項目
+                    st.markdown(
+                        f'<span style="color:{color_hex}; font-weight:bold;">{e["date"]}</span> '
+                        f'<span style="color:{color_hex};">{time_str} - <strong>{e["summary"]}</strong></span>', 
+                        unsafe_allow_html=True
+                    )
                     if e.get('description'):
                         st.caption(f"Description: {e['description']}")
             else:
