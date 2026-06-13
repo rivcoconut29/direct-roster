@@ -132,7 +132,7 @@ if uploaded_file is not None:
                                 'date': preop_date_obj.strftime('%Y-%m-%d'),
                                 'start_time': '09:30',
                                 'end_time': '10:30',
-                                'summary': 'pre-op',
+                                'summary': 'Pre-op',
                                 'description': f"Automated pre-op session for OT duty scheduled on {current_duty_date} ({col_b})"
                             })
                         
