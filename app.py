@@ -72,7 +72,7 @@ if uploaded_file is not None:
         personnel_list = [str(name).strip() for name in raw_names if str(name).strip() and str(name).strip().lower() not in ignored_tokens]
         personnel_options = sorted(list(set(personnel_list)))
         
-        # --- 優化：Session State 記憶功能 ---
+        # --- Session State 記憶功能 ---
         if "selected_staff_name" not in st.session_state:
             st.session_state["selected_staff_name"] = personnel_options[0] if personnel_options else None
             
@@ -87,7 +87,7 @@ if uploaded_file is not None:
         )
         st.session_state["selected_staff_name"] = selected_staff
         
-        # 其他 UI 控制元件
+        # UI 控制元件
         include_leaves = st.checkbox("Include Leaves (e.g. AL, CO, OFF) as events", value=True)
         show_preop = st.checkbox("Show pre-op (general)", value=False)
         include_oncall = st.checkbox("Include On-Call Duties (All-Day)", value=False)
@@ -172,6 +172,7 @@ if uploaded_file is not None:
                                 'description': f"Automated pre-op session for OT duty scheduled on {current_duty_date} ({col_b})"
                             })
                         
+                        # 精確字串比對，確保 COLP 不會被判定為 leave
                         is_leave = duty_val.lower() in leave_tokens
                         if is_leave and not include_leaves:
                             continue
@@ -291,29 +292,33 @@ if uploaded_file is not None:
                     mime="text/calendar"
                 )
                 
-                # --- 優化：網頁行事曆色彩編碼預覽 ---
+                # --- 網頁行事曆色彩編碼預覽  ---
                 st.write("---")
                 st.subheader("Calendar Preview")
                 for e in sorted_events:
                     summary_up = e['summary'].upper()
                     
-                    # 依據條件指定 Hex 顏色碼
+                    # 提取核心班表代碼 (排除 "AM: " 或 "PM: " 前綴)
+                    core_duty = summary_up
+                    if ": " in summary_up:
+                        core_duty = summary_up.split(": ", 1)[1]
+                    
+                    # 依據精確核心代碼指定顏色
                     if "ROUND:" in summary_up:
                         color_hex = "#2E7D32"  # 綠色
                     elif "ON CALL" in summary_up:
                         color_hex = "#D32F2F"  # 紅色
                     elif "PRE-OP" in summary_up:
                         color_hex = "#1976D2"  # 藍色
-                    elif any(token in summary_up for token in ["OFF", "AL", "CO"]):
+                    elif core_duty in ["OFF", "AL", "CO"]:  
                         color_hex = "#757575"  # 灰色
                     elif "AM:" in summary_up or "PM:" in summary_up:
-                        color_hex = "#B7950B"  # 深黃/金色 (確保高對比可讀性)
+                        color_hex = "#B7950B"  # 深黃/金色 
                     else:
                         color_hex = "#333333"
                         
                     time_str = "[All Day]" if e['all_day'] else f"({e['start_time']} - {e['end_time']})"
                     
-                    # 渲染色彩編碼後的行程項目
                     st.markdown(
                         f'<span style="color:{color_hex}; font-weight:bold;">{e["date"]}</span> '
                         f'<span style="color:{color_hex};">{time_str} - <strong>{e["summary"]}</strong></span>', 
