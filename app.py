@@ -83,7 +83,8 @@ if uploaded_file is not None:
             
             # --- 階段 A: 提取巡房表 (Ward Round) ---
             current_round_date = None
-            for r_idx in range(4, len(df_raw_round)):
+            # 寫死忽略最後 7 列
+            for r_idx in range(4, len(df_raw_round) - 7):
                 col_a = str(df_raw_round.iloc[r_idx, 0]).strip()
                 if col_a != "nan" and col_a != "":
                     try:
