@@ -291,7 +291,7 @@ if uploaded_file is not None:
                     mime="text/calendar"
                 )
                 
-                # --- 網頁行事曆預覽 (已整合同行描述) ---
+                # --- 網頁行事曆預覽 (說明固定為灰色) ---
                 st.write("---")
                 st.subheader("Calendar Preview")
                 for e in sorted_events:
@@ -314,13 +314,13 @@ if uploaded_file is not None:
                     else:
                         color_hex = "#333333"
                         
-                    # 建立同行的描述字串
-                    inline_desc = f" *({e['description']})*" if e.get('description') else ""
+                    # 獨立建立灰色斜體的同行描述字串 span
+                    inline_desc = f' <span style="color:#757575; font-style:italic;">({e["description"]})</span>' if e.get('description') else ""
                     
-                    # 將日期、班表主體、同行描述合併至單一 markdown 節點中輸出
+                    # 渲染日期與主體名稱（依據班表性質變色），後方串接獨立控制顏色的描述文字
                     st.markdown(
                         f'<span style="color:{color_hex}; font-weight:bold;">{e["date"]}</span> '
-                        f'<span style="color:{color_hex};"> - <strong>{e["summary"]}</strong>{inline_desc}</span>', 
+                        f'<span style="color:{color_hex};"> - <strong>{e["summary"]}</strong></span>{inline_desc}', 
                         unsafe_allow_html=True
                     )
             else:
