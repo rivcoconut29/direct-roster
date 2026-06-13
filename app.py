@@ -87,109 +87,112 @@ if uploaded_file is not None:
         )
         st.session_state["selected_staff_name"] = selected_staff
         
-        # UI 控制元件
+        # --- UI 控制元件 (已調整順序與新增主開關) ---
+        include_regular_duties = st.checkbox("Include AM / PM / Round duties", value=True)
         include_leaves = st.checkbox("Include Leaves (e.g. AL, CO, OFF) as events", value=True)
-        show_preop = st.checkbox("Show pre-op (general)", value=False)
         include_oncall = st.checkbox("Include On-Call Duties (All-Day)", value=False)
+        show_preop = st.checkbox("Show pre-op (general)", value=False)
         
         if selected_staff:
             events = []
             round_records = {} 
             
             # --- 階段 A: 提取巡房表 (Ward Round) ---
-            current_round_date = None
-            # 固定忽略最後 7 列備忘錄
-            for r_idx in range(4, len(df_raw_round) - 7):
-                col_a = str(df_raw_round.iloc[r_idx, 0]).strip()
-                
-                if col_a != "nan" and col_a != "":
-                    try:
-                        day_num = int(float(col_a))
-                        current_round_date = datetime.date(year, month, day_num).strftime('%Y-%m-%d')
-                    except ValueError:
-                        pass
-                
-                if not current_round_date:
-                    continue
+            if include_regular_duties:
+                current_round_date = None
+                # 固定忽略最後 7 列備忘錄
+                for r_idx in range(4, len(df_raw_round) - 7):
+                    col_a = str(df_raw_round.iloc[r_idx, 0]).strip()
                     
-                for c_idx, ward_name in ward_column_map.items():
-                    if c_idx < df_raw_round.shape[1]:
-                        cell_txt = str(df_raw_round.iloc[r_idx, c_idx]).strip()
-                        if cell_txt and cell_txt != 'nan':
-                            if selected_staff.lower() in cell_txt.lower():
-                                events.append({
-                                    'all_day': False,
-                                    'date': current_round_date,
-                                    'start_time': '08:30',
-                                    'end_time': '10:30',
-                                    'summary': ward_name,
-                                    'description': f"Roster notation: {cell_txt}"
-                                })
-                                round_records[current_round_date] = True
-
-            # --- 階段 B: 提取主班表 (Duty List) ---
-            staff_col_idx = None
-            for idx, col_val in enumerate(df_raw_duty.iloc[1, :]):
-                if str(col_val).strip() == selected_staff:
-                    staff_col_idx = idx
-                    break
-            
-            if staff_col_idx is not None:
-                current_duty_date_obj = None
-                current_duty_date = None
-                leave_tokens = ['al', 'co', 'off']
-                
-                for r_idx in range(3, len(df_raw_duty)):
-                    col_a = str(df_raw_duty.iloc[r_idx, 0]).strip()
-                    col_b = str(df_raw_duty.iloc[r_idx, 1]).strip()
-                    
-                    if "free session" in col_a.lower() or "admin duty" in col_a.lower():
-                        break
-                        
                     if col_a != "nan" and col_a != "":
                         try:
                             day_num = int(float(col_a))
-                            current_duty_date_obj = datetime.date(year, month, day_num)
-                            current_duty_date = current_duty_date_obj.strftime('%Y-%m-%d')
+                            current_round_date = datetime.date(year, month, day_num).strftime('%Y-%m-%d')
                         except ValueError:
                             pass
                     
-                    if not current_duty_date or not current_duty_date_obj:
+                    if not current_round_date:
                         continue
                         
-                    time_slot = "AM" if "AM" in col_b else ("PM" if "PM" in col_b else None)
-                    duty_val = str(df_raw_duty.iloc[r_idx, staff_col_idx]).strip()
+                    for c_idx, ward_name in ward_column_map.items():
+                        if c_idx < df_raw_round.shape[1]:
+                            cell_txt = str(df_raw_round.iloc[r_idx, c_idx]).strip()
+                            if cell_txt and cell_txt != 'nan':
+                                if selected_staff.lower() in cell_txt.lower():
+                                    events.append({
+                                        'all_day': False,
+                                        'date': current_round_date,
+                                        'start_time': '08:30',
+                                        'end_time': '10:30',
+                                        'summary': ward_name,
+                                        'description': f"Roster notation: {cell_txt}"
+                                    })
+                                    round_records[current_round_date] = True
+
+            # --- 階段 B: 提取主班表 (Duty List) ---
+            if include_regular_duties:
+                staff_col_idx = None
+                for idx, col_val in enumerate(df_raw_duty.iloc[1, :]):
+                    if str(col_val).strip() == selected_staff:
+                        staff_col_idx = idx
+                        break
+                
+                if staff_col_idx is not None:
+                    current_duty_date_obj = None
+                    current_duty_date = None
+                    leave_tokens = ['al', 'co', 'off']
                     
-                    if duty_val and duty_val.lower() not in ['nan', '', 'x', '-']:
-                        if show_preop and duty_val.upper() == "OT" and any(day in col_b for day in ["Tue", "Wed"]):
-                            preop_date_obj = current_duty_date_obj - datetime.timedelta(days=8)
-                            events.append({
-                                'all_day': False,
-                                'date': preop_date_obj.strftime('%Y-%m-%d'),
-                                'start_time': '09:30',
-                                'end_time': '10:30',
-                                'summary': 'Pre-op',
-                                'description': f"Automated pre-op session for OT duty scheduled on {current_duty_date} ({col_b})"
-                            })
+                    for r_idx in range(3, len(df_raw_duty)):
+                        col_a = str(df_raw_duty.iloc[r_idx, 0]).strip()
+                        col_b = str(df_raw_duty.iloc[r_idx, 1]).strip()
                         
-                        is_leave = duty_val.lower() in leave_tokens
-                        if is_leave and not include_leaves:
+                        if "free session" in col_a.lower() or "admin duty" in col_a.lower():
+                            break
+                            
+                        if col_a != "nan" and col_a != "":
+                            try:
+                                day_num = int(float(col_a))
+                                current_duty_date_obj = datetime.date(year, month, day_num)
+                                current_duty_date = current_duty_date_obj.strftime('%Y-%m-%d')
+                            except ValueError:
+                                pass
+                        
+                        if not current_duty_date or not current_duty_date_obj:
                             continue
                             
-                        slot_info = {
-                            'all_day': False,
-                            'date': current_duty_date,
-                            'summary': f"{time_slot}: {duty_val}",
-                            'description': ""
-                        }
+                        time_slot = "AM" if "AM" in col_b else ("PM" if "PM" in col_b else None)
+                        duty_val = str(df_raw_duty.iloc[r_idx, staff_col_idx]).strip()
                         
-                        if time_slot == "AM":
-                            has_round = current_duty_date in round_records
-                            slot_info.update({'start_time': '10:30' if has_round else '08:30', 'end_time': '13:00'})
-                            events.append(slot_info)
-                        elif time_slot == "PM":
-                            slot_info.update({'start_time': '14:00', 'end_time': '17:00'})
-                            events.append(slot_info)
+                        if duty_val and duty_val.lower() not in ['nan', '', 'x', '-']:
+                            if show_preop and duty_val.upper() == "OT" and any(day in col_b for day in ["Tue", "Wed"]):
+                                preop_date_obj = current_duty_date_obj - datetime.timedelta(days=8)
+                                events.append({
+                                    'all_day': False,
+                                    'date': preop_date_obj.strftime('%Y-%m-%d'),
+                                    'start_time': '09:30',
+                                    'end_time': '10:30',
+                                    'summary': 'Pre-op',
+                                    'description': f"Automated pre-op session for OT duty scheduled on {current_duty_date} ({col_b})"
+                                })
+                            
+                            is_leave = duty_val.lower() in leave_tokens
+                            if is_leave and not include_leaves:
+                                continue
+                                
+                            slot_info = {
+                                'all_day': False,
+                                'date': current_duty_date,
+                                'summary': f"{time_slot}: {duty_val}",
+                                'description': ""
+                            }
+                            
+                            if time_slot == "AM":
+                                has_round = current_duty_date in round_records
+                                slot_info.update({'start_time': '10:30' if has_round else '08:30', 'end_time': '13:00'})
+                                events.append(slot_info)
+                            elif time_slot == "PM":
+                                slot_info.update({'start_time': '14:00', 'end_time': '17:00'})
+                                events.append(slot_info)
 
             # --- 階段 C: 提取 On-Call 表 (Call List) ---
             if include_oncall and "Call List" in xl.sheet_names:
@@ -291,7 +294,7 @@ if uploaded_file is not None:
                     mime="text/calendar"
                 )
                 
-                # --- 網頁行事曆預覽 (說明固定為灰色) ---
+                # --- 網頁行事曆預覽 ---
                 st.write("---")
                 st.subheader("Calendar Preview")
                 for e in sorted_events:
@@ -314,10 +317,8 @@ if uploaded_file is not None:
                     else:
                         color_hex = "#333333"
                         
-                    # 獨立建立灰色斜體的同行描述字串 span
                     inline_desc = f' <span style="color:#757575; font-style:italic;">({e["description"]})</span>' if e.get('description') else ""
                     
-                    # 渲染日期與主體名稱（依據班表性質變色），後方串接獨立控制顏色的描述文字
                     st.markdown(
                         f'<span style="color:{color_hex}; font-weight:bold;">{e["date"]}</span> '
                         f'<span style="color:{color_hex};"> - <strong>{e["summary"]}</strong></span>{inline_desc}', 
