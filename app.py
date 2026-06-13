@@ -55,14 +55,14 @@ if uploaded_file is not None:
         selected_staff = st.selectbox("Select your name to extract duties:", sorted(list(set(personnel_list))))
         include_leaves = st.checkbox("Include Leaves (e.g. AL, CO, OFF) as events", value=True)
         show_preop = st.checkbox("Show pre-op (general)", value=False)
+        include_oncall = st.checkbox("Include On-Call Duties (All-Day)", value=False)
         
         if selected_staff:
             events = []
+            round_records = {} 
             
             # --- 階段 A: 提取巡房表 (Ward Round) ---
             current_round_date = None
-            round_records = {} 
-            
             for r_idx in range(4, len(df_raw_round)):
                 col_a = str(df_raw_round.iloc[r_idx, 0]).strip()
                 if col_a != "nan" and col_a != "":
@@ -124,7 +124,6 @@ if uploaded_file is not None:
                     duty_val = str(df_raw_duty.iloc[r_idx, staff_col_idx]).strip()
                     
                     if duty_val and duty_val.lower() not in ['nan', '', 'x', '-']:
-                        # 處理自動推算前一週 8 天前的 pre-op 機制
                         if show_preop and duty_val.upper() == "OT" and any(day in col_b for day in ["Tue", "Wed"]):
                             preop_date_obj = current_duty_date_obj - datetime.timedelta(days=8)
                             events.append({
@@ -136,7 +135,6 @@ if uploaded_file is not None:
                                 'description': f"Automated pre-op session for OT duty scheduled on {current_duty_date} ({col_b})"
                             })
                         
-                        # 檢查是否為請假/放假項目
                         is_leave = duty_val.lower() in leave_tokens
                         if is_leave and not include_leaves:
                             continue
@@ -156,7 +154,54 @@ if uploaded_file is not None:
                             slot_info.update({'start_time': '14:00', 'end_time': '17:00'})
                             events.append(slot_info)
 
-            # --- 階段 C: 生成 ICS 檔案 ---
+            # --- 階段 C: 提取 On-Call 表 (Call List) ---
+            if include_oncall and "Call List" in xl.sheet_names:
+                df_raw_call = xl.parse("Call List", header=None)
+                df_raw_call = df_raw_call.fillna("nan").astype(str)
+                
+                for r_idx in range(4, len(df_raw_call)):
+                    col_a = str(df_raw_call.iloc[r_idx, 0]).strip()
+                    day_num = None
+                    
+                    if "1900-01-" in col_a:
+                        try:
+                            day_num = int(col_a.split('-')[2])
+                        except (IndexError, ValueError):
+                            pass
+                    elif col_a != "nan" and col_a != "":
+                        try:
+                            day_num = int(float(col_a))
+                        except ValueError:
+                            pass
+                            
+                    if day_num is None:
+                        continue
+                        
+                    current_call_date = datetime.date(year, month, day_num).strftime('%Y-%m-%d')
+                    
+                    # 擷取第 4 欄之後的所有排班人員單元格 (排除 A、B、C、D 欄)
+                    call_cols_range = range(4, df_raw_call.shape[1])
+                    row_staff_tokens = [str(df_raw_call.iloc[r_idx, c]).strip() for c in call_cols_range]
+                    row_staff_clean = [t.replace('*', '').strip().lower() for t in row_staff_tokens]
+                    
+                    if selected_staff.lower() in row_staff_clean:
+                        other_personnel = []
+                        for c_idx in call_cols_range:
+                            val = str(df_raw_call.iloc[r_idx, c_idx]).strip()
+                            if val and val.lower() not in ['nan', '']:
+                                if val.replace('*', '').strip().lower() != selected_staff.lower():
+                                    other_personnel.append(val)
+                                    
+                        desc_str = f"Other on-call personnel: {', '.join(other_personnel)}" if other_personnel else "No other personnel listed."
+                        
+                        events.append({
+                            'all_day': True,
+                            'date': current_call_date,
+                            'summary': 'On Call',
+                            'description': desc_str
+                        })
+
+            # --- 階段 D: 生成 ICS 檔案 ---
             if len(events) > 0:
                 lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Duty//EN", "CALSCALE:GREGORIAN", "METHOD:PUBLISH"]
                 for e in events:
@@ -165,11 +210,19 @@ if uploaded_file is not None:
                     lines.append(f"UID:{uid}")
                     
                     date_raw = e['date'].replace('-', '')
-                    st_raw = e['start_time'].replace(':', '') + "00"
-                    end_raw = e['end_time'].replace(':', '') + "00"
+                    if e['all_day']:
+                        # 全天事件：DTSTART 與 DTEND 僅包含日期，且結束日期為隔天
+                        curr_date_obj = datetime.datetime.strptime(e['date'], '%Y-%m-%d').date()
+                        next_date_obj = curr_date_obj + datetime.timedelta(days=1)
+                        next_date_raw = next_date_obj.strftime('%Y%m%d')
+                        lines.append(f"DTSTART;VALUE=DATE:{date_raw}")
+                        lines.append(f"DTEND;VALUE=DATE:{next_date_raw}")
+                    else:
+                        st_raw = e['start_time'].replace(':', '') + "00"
+                        end_raw = e['end_time'].replace(':', '') + "00"
+                        lines.append(f"DTSTART:{date_raw}T{st_raw}")
+                        lines.append(f"DTEND:{date_raw}T{end_raw}")
                     
-                    lines.append(f"DTSTART:{date_raw}T{st_raw}")
-                    lines.append(f"DTEND:{date_raw}T{end_raw}")
                     lines.append(f"SUMMARY:{e['summary']}")
                     
                     if e.get('description'):
