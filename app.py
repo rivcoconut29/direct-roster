@@ -31,11 +31,13 @@ def extract_day_num(val):
 
 if uploaded_file is not None:
     try:
-        # 1. 讀取主分頁 "Duty List" 並強制將所有內容先轉為字串
-        df_raw_duty = pd.read_excel(uploaded_file, sheet_name="Duty List", header=None)
+        xl = pd.ExcelFile(uploaded_file)
+        
+        # 1. 讀取主分頁 "Duty List"
+        df_raw_duty = xl.parse("Duty List", header=None)
         df_raw_duty = df_raw_duty.fillna("nan").astype(str)
         
-        # 從 A1 儲存格動態提取年份與月份
+        # 動態提取年份與月份
         header_text = str(df_raw_duty.iloc[0, 0]).strip()
         year_match = re.search(r'\b(\d{4})\b', header_text)
         year = int(year_match.group(1)) if year_match else datetime.date.today().year
@@ -61,29 +63,26 @@ if uploaded_file is not None:
             8: "Round: A2",
             9: "Round: A2"
         }
-        df_raw_round = pd.read_excel(uploaded_file, sheet_name="Ward round", header=None)
+        df_raw_round = xl.parse("Ward round", header=None)
         df_raw_round = df_raw_round.fillna("nan").astype(str)
-        
-        # 3. 讀取 "Call List" 分頁
-        df_call = pd.read_excel(uploaded_file, sheet_name="Call List", header=None)
-        df_call = df_call.fillna("nan").astype(str)
         
         # 從主表第 2 行提取所有員工簡寫名稱
         raw_names = df_raw_duty.iloc[1, 2:].tolist()
         ignored_tokens = ['nan', 'free', 'an', 'gyn', '']
         personnel_list = [str(name).strip() for name in raw_names if str(name).strip() and str(name).strip().lower() not in ignored_tokens]
         
-        # UI 介面：選擇人員與開關 On-Call 功能
+        # UI 介面
         selected_staff = st.selectbox("Select your name to extract duties:", sorted(list(set(personnel_list))))
-        include_oncall = st.checkbox("Include On-Call Events (All-Day)", value=True)
+        include_leaves = st.checkbox("Include Leaves (e.g. AL, CO, OFF) as events", value=True)
+        show_preop = st.checkbox("Show pre-op (general)", value=False)
+        include_oncall = st.checkbox("Include On-Call Duties (All-Day)", value=False)
         
         if selected_staff:
             events = []
+            round_records = {} 
             
             # --- 階段 A: 提取巡房表 (Ward Round) ---
             current_round_date = None
-            round_records = {} 
-            
             for r_idx in range(4, len(df_raw_round)):
                 col_a = str(df_raw_round.iloc[r_idx, 0]).strip()
                 if col_a != "nan" and col_a != "":
@@ -119,7 +118,10 @@ if uploaded_file is not None:
                     break
             
             if staff_col_idx is not None:
+                current_duty_date_obj = None
                 current_duty_date = None
+                leave_tokens = ['al', 'co', 'off']
+                
                 for r_idx in range(3, len(df_raw_duty)):
                     col_a = str(df_raw_duty.iloc[r_idx, 0]).strip()
                     col_b = str(df_raw_duty.iloc[r_idx, 1]).strip()
@@ -130,17 +132,34 @@ if uploaded_file is not None:
                     if col_a != "nan" and col_a != "":
                         try:
                             day_num = int(float(col_a))
-                            current_duty_date = datetime.date(year, month, day_num).strftime('%Y-%m-%d')
+                            current_duty_date_obj = datetime.date(year, month, day_num)
+                            current_duty_date = current_duty_date_obj.strftime('%Y-%m-%d')
                         except ValueError:
                             pass
                     
-                    if not current_duty_date:
+                    if not current_duty_date or not current_duty_date_obj:
                         continue
                         
                     time_slot = "AM" if "AM" in col_b else ("PM" if "PM" in col_b else None)
                     duty_val = str(df_raw_duty.iloc[r_idx, staff_col_idx]).strip()
                     
                     if duty_val and duty_val.lower() not in ['nan', '', 'x', '-']:
+                        # 處理自動推算前一週 8 天前的 Pre-op 機制
+                        if show_preop and duty_val.upper() == "OT" and any(day in col_b for day in ["Tue", "Wed"]):
+                            preop_date_obj = current_duty_date_obj - datetime.timedelta(days=8)
+                            events.append({
+                                'all_day': False,
+                                'date': preop_date_obj.strftime('%Y-%m-%d'),
+                                'start_time': '09:30',
+                                'end_time': '10:30',
+                                'summary': 'Pre-op',
+                                'description': f"Automated pre-op session for OT duty scheduled on {current_duty_date} ({col_b})"
+                            })
+                        
+                        is_leave = duty_val.lower() in leave_tokens
+                        if is_leave and not include_leaves:
+                            continue
+                            
                         slot_info = {
                             'all_day': False,
                             'date': current_duty_date,
@@ -157,21 +176,23 @@ if uploaded_file is not None:
                             events.append(slot_info)
 
             # --- 階段 C: 提取 On-Call 表 (Call List) ---
-            if include_oncall:
+            if include_oncall and "Call List" in xl.sheet_names:
+                df_raw_call = xl.parse("Call List", header=None)
+                df_raw_call = df_raw_call.fillna("nan").astype(str)
+                
                 curr_month = month
                 curr_year = year
                 prev_day = None
                 
-                for r_idx in range(len(df_call)):
-                    col_a = str(df_call.iloc[r_idx, 0]).strip()
+                for r_idx in range(4, len(df_raw_call)):
+                    col_a = str(df_raw_call.iloc[r_idx, 0]).strip()
                     
-                    # 遇到下方非排班的備註欄位文字，直接安全中斷避免誤判
                     if "urgent call" in col_a.lower() or "bolded" in col_a.lower() or "from a&e" in col_a.lower():
                         break
                         
                     day_num = extract_day_num(col_a)
                     if day_num is not None:
-                        # 處理跨月邏輯
+                        # 處理跨月自動校正邏輯
                         if prev_day is None and day_num > 20:
                             curr_month = month - 1
                             if curr_month == 0:
@@ -184,48 +205,57 @@ if uploaded_file is not None:
                                 curr_year += 1
                                 
                         prev_day = day_num
-                        call_date_str = datetime.date(curr_year, curr_month, day_num).strftime('%Y-%m-%d')
                         
-                        # 掃描 E 到 J 欄 (index 4 to 9)
-                        for c_idx in range(4, 10):
-                            if c_idx < df_call.shape[1]:
-                                cell_txt = str(df_call.iloc[r_idx, c_idx]).strip()
-                                if cell_txt and cell_txt != 'nan':
-                                    if selected_staff.lower() in cell_txt.lower():
-                                        events.append({
-                                            'all_day': True,
-                                            'date': call_date_str,
-                                            'summary': "On Call",
-                                            'description': f"Call List notation: {cell_txt}"
-                                        })
-                                        break
+                        try:
+                            current_call_date = datetime.date(curr_year, curr_month, day_num).strftime('%Y-%m-%d')
+                            
+                            call_cols_range = range(4, df_raw_call.shape[1])
+                            row_staff_tokens = [str(df_raw_call.iloc[r_idx, c]).strip() for c in call_cols_range]
+                            row_staff_clean = [t.replace('*', '').strip().lower() for t in row_staff_tokens]
+                            
+                            if selected_staff.lower() in row_staff_clean:
+                                other_personnel = []
+                                for c_idx in call_cols_range:
+                                    val = str(df_raw_call.iloc[r_idx, c_idx]).strip()
+                                    if val and val.lower() not in ['nan', '']:
+                                        if val.replace('*', '').strip().lower() != selected_staff.lower():
+                                            other_personnel.append(val)
+                                            
+                                desc_str = f"Other on-call personnel: {', '.join(other_personnel)}" if other_personnel else "No other personnel listed."
+                                
+                                events.append({
+                                    'all_day': True,
+                                    'date': current_call_date,
+                                    'summary': 'On Call',
+                                    'description': desc_str
+                                })
+                        except ValueError:
+                            pass
 
-            # --- 階段 D: 編譯並生成產出檔案 ---
+            # --- 階段 D: 生成 ICS 檔案 與 預覽 ---
             if len(events) > 0:
+                # 依據日期與時間排序
+                sorted_events = sorted(events, key=lambda x: (x['date'], x.get('start_time', '00:00')))
+                
                 lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Duty//EN", "CALSCALE:GREGORIAN", "METHOD:PUBLISH"]
-                for e in events:
+                for e in sorted_events:
                     uid = f"{e['date'].replace('-', '')}-{uuid.uuid4().hex[:8]}@duty.local"
                     lines.append("BEGIN:VEVENT")
                     lines.append(f"UID:{uid}")
                     
-                    if e.get('all_day'):
-                        # 處理全天事件的格式
-                        start_dt = datetime.datetime.strptime(e['date'], '%Y-%m-%d')
-                        end_dt = start_dt + datetime.timedelta(days=1)
-                        date_start_raw = start_dt.strftime('%Y%m%d')
-                        date_end_raw = end_dt.strftime('%Y%m%d')
-                        
-                        lines.append(f"DTSTART;VALUE=DATE:{date_start_raw}")
-                        lines.append(f"DTEND;VALUE=DATE:{date_end_raw}")
+                    date_raw = e['date'].replace('-', '')
+                    if e['all_day']:
+                        curr_date_obj = datetime.datetime.strptime(e['date'], '%Y-%m-%d').date()
+                        next_date_obj = curr_date_obj + datetime.timedelta(days=1)
+                        next_date_raw = next_date_obj.strftime('%Y%m%d')
+                        lines.append(f"DTSTART;VALUE=DATE:{date_raw}")
+                        lines.append(f"DTEND;VALUE=DATE:{next_date_raw}")
                     else:
-                        # 處理特定時間事件的格式
-                        date_raw = e['date'].replace('-', '')
                         st_raw = e['start_time'].replace(':', '') + "00"
                         end_raw = e['end_time'].replace(':', '') + "00"
-                        
                         lines.append(f"DTSTART:{date_raw}T{st_raw}")
                         lines.append(f"DTEND:{date_raw}T{end_raw}")
-                        
+                    
                     lines.append(f"SUMMARY:{e['summary']}")
                     
                     if e.get('description'):
@@ -234,16 +264,29 @@ if uploaded_file is not None:
                         
                     lines.append("END:VEVENT")
                 lines.append("END:VCALENDAR")
-                ics_text = "\n".join(lines)
+                
+                ics_text = "\r\n".join(lines) + "\r\n"
                 
                 st.info(f"Detected Target Period: {month}/{year}")
-                st.success(f"Successfully compiled {len(events)} calendar items for {selected_staff}!")
+                st.success(f"Successfully compiled {len(sorted_events)} calendar items for {selected_staff}!")
+                
                 st.download_button(
                     label=f"Download {selected_staff}'s .ics File",
                     data=ics_text,
                     file_name=f"Roster_{selected_staff}_{month}_{year}.ics",
                     mime="text/calendar"
                 )
+                
+                # 網頁行事曆即時預覽
+                st.write("---")
+                st.subheader("Calendar Preview")
+                for e in sorted_events:
+                    if e['all_day']:
+                        st.write(f"**{e['date']}** [All Day] - **{e['summary']}**")
+                    else:
+                        st.write(f"**{e['date']}** ({e['start_time']} - {e['end_time']}) - **{e['summary']}**")
+                    if e.get('description'):
+                        st.caption(f"Description: {e['description']}")
             else:
                 st.warning(f"No active schedule items mapped for {selected_staff}.")
                 
